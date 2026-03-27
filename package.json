@@ -1,0 +1,16 @@
+{
+  "name": "pi-etna",
+  "version": "0.1.0",
+  "description": "Pi extension for ETNA workload generation — scans Rust project history for bug fixes and injects marauders mutations",
+  "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  }
+}
