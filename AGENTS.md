@@ -1,68 +1,66 @@
-# pi-etna: ETNA Workload Generation Agent
+# pi-etna: ETNA Workload Generation
 
-## What This Package Does
+## What this is
 
-pi-etna drives an LLM-guided pipeline that turns Rust projects with property-based tests into ETNA workloads. It scans git history for bug fixes and injects marauders mutations that recreate those bugs.
+pi-etna takes a Rust project with property-based tests, mines its entire git history for bug fixes, and produces an ETNA workload: every bug lives as a mutation, every mutation has a framework-neutral property function, a deterministic witness, and adapters for proptest / quickcheck / crabcheck / hegel. A single `src/bin/etna.rs` dispatcher drives them programmatically.
 
-## Architecture
-
-- **Tools** are thin mechanical wrappers around git, cargo, and marauders CLI commands
-- **Skills** contain per-stage reasoning instructions and output schemas
-- **The agent (you) makes all judgment calls**: classifying commits, ranking candidates, deciding mutation expressibility, writing tests, injecting mutations
-- **Orchestrator** manages pipeline state, checkpoints, and gate enforcement
-
-## Available Tools
-
-- `etna_git_batch`, `etna_git_show`, `etna_git_diff_range` — git history traversal
-- `etna_marauders_list`, `etna_marauders_convert` — mutation framework
-- `etna_cargo_test_base`, `etna_cargo_test_variant` — test execution
-- `etna_checkpoint_write`, `etna_checkpoint_read`, `etna_checkpoint_list` — checkpoint state
-- `etna_pipeline_status`, `etna_pipeline_advance`, `etna_pipeline_gate_check` — orchestration
-
-## Pipeline Stage Order
+## Pipeline (5 stages)
 
 ```
-candidates → ranked → fixes → classified → tests → mutations → report → docs → validation
+discover  ->  atomize  ->  runner  ->  document  ->  validate
 ```
 
-## Key Rules
+1. **discover** — full `git log --all` scan, keep every fix commit.
+2. **atomize** — per candidate: extract fix, write property + adapters, inject mutation, write witness, verify, commit to `etna/<variant>` branch.
+3. **runner** — `src/bin/etna.rs` dispatches `<tool> <property>` programmatically.
+4. **document** — generate `BUGS.md` + `TASKS.md` from source truth.
+5. **validate** — base passes, every variant detected, every framework runs, docs consistent.
 
-1. **Always include `run_id` and `project`** in checkpoint data
-2. **Never hand-author numeric summaries** — derive counts from checkpoint array lengths
-3. **Always verify base tests pass** before accepting mutations (`etna_cargo_test_base`)
-4. **Always verify variant tests fail** before retaining mutations (`etna_cargo_test_variant`)
-5. **Use functional mutation syntax during testing**, comment syntax for final output
-6. **Mutation naming**: `<descriptive_name>_<7-char-commit-hash>_<sequence>`
-7. **Every removal needs a reason** — no silently dropping mutations
+## Source-of-truth rule
 
-## Marauders CLI
+The source tree, `etna.toml`, and git branches are the only durable state. No checkpoint JSONs, no intermediate manifests. Numbers in docs are always derived from the tree.
 
-```sh
-marauders list --path <project_dir>        # list all mutations
-marauders convert --path <file> --to functional  # convert for testing
-marauders convert --path <file> --to comment     # convert for final output
-```
+`etna.toml` lives at project root. One `[[variant]]` table per mutation. Every other fact (file:line, framework coverage, witnesses) is recoverable via `marauders list`, `ls patches/`, or `grep`.
 
-## Marauders Comment Syntax
+## Property function contract
 
 ```rust
-/*| mutation_name [tag1, tag2] */
-<fixed code (base)>
-/*|| variant_name */
-/*|
-<buggy code (variant)>
-*/
-/* |*/
+pub fn property_<name>(inputs: T) -> PropertyResult
 ```
 
-## Test Execution Strategy
+Returns `PropertyResult::{Pass, Fail(String), Discard}`. Deterministic, totally pure, takes owned concrete inputs. Reused by every framework adapter and by the witness. Never re-implemented inside an adapter.
 
-Tests use functional mutations to avoid recompilation between variants:
-1. Convert to functional: `etna_marauders_convert` with `to: "functional"`
-2. Run with variant: `etna_cargo_test_variant` (sets `M_<variant>=active`)
-3. Convert back to comment: `etna_marauders_convert` with `to: "comment"`
+## Witness contract
 
-## Checkpoint Directory
+A witness is a concrete `#[test]` named `witness_<name>_case_<tag>` that calls `property_<name>` with frozen inputs. Passes on base HEAD, fails on `M_<variant>=active` or on the `etna/<variant>` branch. No RNG, no clock, no `proptest!` macros, no `#[quickcheck]`.
 
-All stage outputs go to `<project_dir>/checkpoints/<stage>.json`.
-Pipeline state lives at `<project_dir>/checkpoints/pi_etna_state.json`.
+## Injection: marauders vs patch
+
+- **Marauders** (preferred for localized changes): comment syntax in the source file, activated by `M_<variant>=active` for testing.
+- **Patch** (fallback): `patches/<variant>.patch` applied to a fresh worktree off the base commit. Used when the fix spans many files or is too intertwined for clean marauders extraction. The runner does not need to know about patches — the `etna/<variant>` branch has them already applied.
+
+## Frameworks and where they live
+
+- `proptest` — crates.io.
+- `quickcheck` — fork at `/Users/akeles/Programming/projects/PbtBenchmark/quickcheck` (feature `etna`).
+- `crabcheck` — `/Users/akeles/Programming/projects/PbtBenchmark/crabcheck`.
+- `hegel` — crates.io `hegeltest = "0.3.7"` (import path `hegel::`). Drives its own `Hegel::new(...).run()` loop, catches panic on counterexample, and downcasts the payload. **Never** stub hegel by delegating to `run_etna_property` or the witness replay — that produces always-`inputs=1` numbers and silently misrepresents the benchmark. The local `/Users/akeles/Programming/projects/PbtBenchmark/hegel-rust` crate (v0.4.5) does not compile as of 2026-04; stay on crates.io 0.3.7. Hegeltest 0.3.7 defaults to a Python/uv subprocess backend, adding ~650 ms startup per run.
+
+## Invariants
+
+- One commit per variant. All variants share the same `base_commit`, and that SHA equals current master HEAD.
+- `marauders list` and `patches/` are consistent with `etna.toml`.
+- `BUGS.md` total mutations count = `len(etna.toml.variant)`.
+- `TASKS.md` total tasks = `sum(len(variant.frameworks))`.
+- No placeholder text in workload-critical files.
+- Every `run_<tool>_property` in `src/bin/etna.rs` actually drives its own framework crate — no stub delegating to `run_etna_property` or a witness replay.
+- Every runner invocation emits a single JSON line to stdout with `{status: "passed"|"failed"|"aborted", tests: N, time: "<us>us", counterexample, error}` and exits with status 0 (except arg-parse errors). Etna's `log_process_output` at `etna2/src/driver.rs:1400` marks any non-zero exit as `status: aborted` and ignores human-readable PASS/FAIL text — so a framework that catches a counterexample but a `main` that exits 1 still produces abort records instead of failures.
+- Framework adapters wrap their run loops in `std::panic::catch_unwind` with a silenced panic hook so panics from the library-under-test (e.g. `NotNan` asserting on NaN results) don't leak to stderr, and the adapter can attribute the panic to the counterexample rather than aborting.
+
+## Not doing anymore
+
+- No `candidates` / `ranked` / `fixes` / `classified` / `tests` / `mutations` / `tasks` / `commit` / `report` / `docs` / `validation` split. Collapsed into 5 stages.
+- No 50-commit batching. No expansion stage. Full history in one pass.
+- No checkpoint JSON files. Source tree is the truth.
+- No ranking filter. Every fix becomes a variant unless terminally inexpressible.
+- No subprocess dispatch in `etna.rs`. Direct library calls to each framework's runner.
