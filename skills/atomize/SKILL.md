@@ -100,7 +100,7 @@ fn quickcheck_<name>(args: ArgsTy) -> quickcheck::TestResult {
   ```
   Then run `marauders list --path <project>` to confirm the variant is parsed.
 
-- **Patch path**: stash the full corrective patch in `patches/<variant>.patch`. The patch's direction is **fixed → buggy** (applying the patch installs the bug). The runner activates patch-based variants via an env var or a generated file; we establish the convention in the `runner` stage. For the commit, apply the patch to a fresh worktree and commit the result on the `etna/<variant>` branch.
+- **Patch path**: stash the full corrective patch in `patches/<variant>.patch`. The patch's direction is **fixed → buggy** (applying the patch installs the bug). The runner activates patch-based variants via an env var or a generated file; we establish the convention in the `runner` stage. **No per-variant git branch is created** — the patch is the variant's only durable artefact, applied with `git apply patches/<variant>.patch` at validate time and reverted with `git apply -R`.
 
 ### 6. Write the witness test
 
@@ -177,20 +177,18 @@ Rules and gotchas to honor when filling this in:
 
 Real-world references for end-to-end shape: `workloads/Rust/half/etna.toml` (marauders + patch mix, 3 variants), `workloads/Rust/rust-base64/etna.toml` (uses `[[dropped]]`), `workloads/Rust/arrayvec/etna.toml` (multiple dropped candidates).
 
-After writing the block, run `etna workload check <project>`. It catches variant-name regex violations, manifest ↔ `marauders list` drift, missing witness/property functions, patch-apply failure, doc drift, and variant-branch ancestry drift in one pass. This is what the pre-commit hook runs on step 9 — cheaper to fix now than on commit.
+After writing the block, run `etna workload check <project>`. It catches variant-name regex violations, manifest ↔ `marauders list` drift, missing witness/property functions, patch-apply failure, and doc drift in one pass. This is what the pre-commit hook runs on step 9 — cheaper to fix now than on commit.
 
 ### 9. Commit
 
-One commit per variant on a parallel branch:
+One single commit on the workload's main branch — `etna.toml`, `patches/<variant>.patch` (if any), property/adapters/witness source edits, and any marauders markers all go in together:
 
 ```sh
-git -C <project> switch -c etna/<variant_name> <base_commit>
-# stage: source mutation edits / patches/<variant>.patch / property+adapters+witness / etna.toml delta
-git -C <project> commit -m "etna: inject <variant_name>"
-git -C <project> switch -       # back to where we were
+git -C <project> add etna.toml patches/ src/ Cargo.toml
+git -C <project> commit -m "etna: add <variant_name>"
 ```
 
-All variants share the **same `<base_commit>`** — the HEAD of the project at the start of the atomize run. Record it once and reuse.
+All variants share the **same `base_commit`** — the HEAD of the project at the start of the atomize run. The base tree is the only checked-out state; reverse-applying a `patches/<variant>.patch` reproduces the buggy state on demand. **No per-variant git branch is created.**
 
 The workload's pre-commit hook runs `etna workload check .` on every commit. If it fails, the just-recorded `[[tasks]]` block is inconsistent with the source tree (bad regex, missing witness, unapplied patch, doc drift, etc.). Fix it in place — do not `--no-verify`.
 
@@ -226,10 +224,10 @@ Emit to `<project>/progress.jsonl` per the contract in `prompts/run.md`:
 | Starting atomize stage                       | `{"stage":"atomize","event":"start","total_candidates":N}`                                                               |
 | Starting work on candidate `i`               | `{"stage":"atomize","event":"variant_start","name":"<variant>","hash":"<short>","i":I,"of":N}`                           |
 | Witness verified: base passes, variant fails | `{"stage":"atomize","event":"variant_detected","name":"<variant>","i":I,"of":N,"injection":"marauders"\|"patch"}`        |
-| Variant committed on its etna/ branch        | `{"stage":"atomize","event":"variant_committed","name":"<variant>","i":I,"of":N,"branch":"etna/<variant>"}`              |
+| Variant recorded in `etna.toml`              | `{"stage":"atomize","event":"variant_committed","name":"<variant>","i":I,"of":N,"injection":"marauders"\|"patch"}`       |
 | Candidate dropped for a terminal reason      | `{"stage":"atomize","event":"variant_skipped","name":"<variant>","i":I,"of":N,"reason":"<reason>"}`                      |
 | All candidates processed                     | `{"stage":"atomize","event":"done","committed":C,"skipped":S}`                                                           |
 
 `variant_detected` without a following `variant_committed` means the injection worked but the commit step failed — resume should re-run from commit.
 
-**Resume logic:** on a second invocation, scan `progress.jsonl` for the most recent `variant_start` without a matching `variant_committed`/`variant_skipped` — that is the candidate to resume from. All earlier `variant_committed` entries are already done (verify via `git branch --list etna/<name>` + `etna.toml` grep before skipping).
+**Resume logic:** on a second invocation, scan `progress.jsonl` for the most recent `variant_start` without a matching `variant_committed`/`variant_skipped` — that is the candidate to resume from. All earlier `variant_committed` entries are already done (verify via grep on `etna.toml` for the `mutations = ["<name>"]` line + presence of `patches/<name>.patch` if patch-kind, before skipping).

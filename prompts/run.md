@@ -15,7 +15,7 @@ Mine the **entire** git history of a Rust project, turn every viable bug fix int
 Run these five stages in order. Each stage's instructions live in its `SKILL.md`.
 
 1. `skills/discover/SKILL.md` — full history scan, in-memory candidate list.
-2. `skills/atomize/SKILL.md` — for **every** candidate: extract fix, write property + 4 framework adapters, inject via marauders or patch, write witness, verify, commit to `etna/<variant>` branch, append a `[[tasks]]` group to `etna.toml`.
+2. `skills/atomize/SKILL.md` — for **every** candidate: extract fix, write property + 4 framework adapters, inject via marauders or patch (`patches/<variant>.patch`), write witness, verify, append a `[[tasks]]` group to `etna.toml`. **No per-variant git branch is created** — the patch is the durable variant artefact.
 3. `skills/runner/SKILL.md` — populate `src/bin/etna.rs` with programmatic dispatch over (tool, property).
 4. `skills/document/SKILL.md` — run `etna workload doc <project>` to regenerate `BUGS.md` / `TASKS.md` deterministically from `etna.toml`.
 5. `skills/validate/SKILL.md` — run `etna workload check <project>` (manifest + docs), then execute real runs to assert per-variant detection and true framework drive.
@@ -68,6 +68,46 @@ progress() {
 If you prefer Python, emit via `python3 -c 'import json, sys, time; print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "stage": sys.argv[1], "event": sys.argv[2], **dict(kv.split("=",1) for kv in sys.argv[3:])}))' <stage> <event> <k=v>... | tee -a "$PROJECT/progress.jsonl"`. Either is fine — just be consistent within a run.
 
 Values that are strings must be quoted (`name="foo"`); integers and booleans must not be (`i=1`). Mis-quoting breaks JSON — use `python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))'` when in doubt.
+
+## Property & generator discipline (REQUIRED reading)
+
+Before writing any property or generator, read
+`etna-ify/prompts/property-discipline.md`. It is the single source of truth
+for:
+
+1. **Hughes' 5-category property synthesis priority** (model-based >
+   postcondition > metamorphic > algebraic > inductive). Pick the
+   highest-priority category that fits; do not write properties whose
+   body or precondition encodes the bug shape.
+2. **Library-faithful generator rule.** Use the upstream's own
+   `proptest::Strategy` / `quickcheck::Arbitrary` / `Arbitrary`-derive
+   instances directly. If none exist, generate at the natural type. Encode
+   preconditions in the property body via `PropertyResult::Discard`, never
+   by narrowing the generator.
+3. **Drop rule.** If no Hughes category yields a bug-independent property,
+   drop the variant — do NOT invent a regression-pinning assertion.
+4. **Two-property rule.** Aim for ≥2 properties per variant from different
+   Hughes categories.
+5. **Validation gate.** Bug-trigger rate of the generator must be in
+   (0.001, 0.80) — not bug-biased, but reachable.
+
+When in doubt, mimic the legacy `etna-haskell-bst` workload at
+`/Users/akeles/Programming/projects/PbtBenchmark/etna/workloads/Haskell/BST/`,
+which is the canonical example from Hughes' paper. (The lessons translate
+to Rust verbatim — Hughes' BST has 5 categories of properties, you write
+the Rust equivalent with `proptest::Arbitrary` for the tree type.)
+
+For Rust workloads specifically:
+- The reference impl for **model-based** is often `Vec` /
+  `BTreeMap` / `BTreeSet` / `Vec::sort` / `str::find` from std.
+- For **no-panics** (postcondition safety), wrap the call in
+  `std::panic::catch_unwind` inside the property; assert
+  `result.is_ok()`. The forked quickcheck at
+  `/Users/akeles/Programming/projects/PbtBenchmark/quickcheck` already
+  silences the panic hook for adapters.
+- The `roaring-rs/IterMatchesModel` workload in our existing corpus is
+  the gold-standard model-based reference — copy its pattern when
+  applicable.
 
 ## Non-negotiables
 

@@ -407,7 +407,7 @@ The counterexample format is always `(a b c)` across frameworks — do **not** p
 
 ## Patch-based variants
 
-Marauders variants activate under `M_<variant>=active` and the runner does not need to know about them. Patch-based variants are different: the runner still does not know about them, because patch activation happens at commit materialization time — the `etna/<variant>` branch has the patch applied, and you test the mutation by building from that branch. The runner itself is identical across base and all variants.
+Marauders variants activate under `M_<variant>=active` and the runner does not need to know about them. Patch-based variants are activated by `git apply patches/<variant>.patch` against the working tree before the runner runs (and reverted with `git apply -R` after). No per-variant git branches are involved. The runner itself is identical across base and all variants.
 
 ## Progress events
 
@@ -430,4 +430,4 @@ Emit to `<project>/progress.jsonl` per the contract in `prompts/run.md`:
 - `property_<name>` functions are **imported**, not reimplemented.
 - Every `run_<tool>_property` must actually invoke its framework crate — no stub that delegates to `run_etna_property` or a witness replay. Validate stage 7 grep will flag this.
 - Every adapter emits `Metrics { inputs, elapsed_us }`. Timing uses `Instant::elapsed().as_micros()`, never `as_millis()`.
-- After any change to `src/bin/etna.rs`, commit on master first, then rebuild every `etna/<variant>` branch from the new master (re-apply patch on a fresh branch off master HEAD). A stale bin on a variant branch produces phantom zero metrics on variant runs.
+- After any change to `src/bin/etna.rs`, commit on master and rebuild. Patch-kind variants pick up the new runner automatically because the patch is applied on top of master at activate time. A stale bin in `target/release/` from a previous build with a different runner produces phantom zero metrics — `cargo build --release --bin etna` after every runner edit.

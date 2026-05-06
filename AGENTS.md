@@ -11,14 +11,14 @@ discover  ->  atomize  ->  runner  ->  document  ->  validate
 ```
 
 1. **discover** — full `git log --all` scan, keep every fix commit.
-2. **atomize** — per candidate: extract fix, write property + adapters, inject mutation, write witness, verify, commit to `etna/<variant>` branch.
+2. **atomize** — per candidate: extract fix, write property + adapters, inject mutation (marauders markers or `patches/<variant>.patch`), write witness, verify. No per-variant git branch is created.
 3. **runner** — `src/bin/etna.rs` dispatches `<tool> <property>` programmatically.
 4. **document** — generate `BUGS.md` + `TASKS.md` from source truth.
 5. **validate** — base passes, every variant detected, every framework runs, docs consistent.
 
 ## Source-of-truth rule
 
-The source tree, `etna.toml`, and git branches are the only durable state *for the workload itself*. No checkpoint JSONs, no intermediate manifests. Numbers in docs are always derived from the tree.
+The source tree, `etna.toml`, and `patches/*.patch` are the only durable state *for the workload itself*. No checkpoint JSONs, no intermediate manifests, no per-variant git branches. Numbers in docs are always derived from the tree.
 
 `etna.toml` lives at project root. One `[[tasks]]` group per mutation (nested `[tasks.source]` / `[tasks.injection]` / `[tasks.bug]` sub-blocks and one-or-more `[[tasks.tasks]]` entries that bind a PascalCase `property` to witness `test_fn` names). Top-level `[[dropped]]` blocks record rejected candidates. Every other fact (file:line, framework coverage, witness existence) is recoverable via `marauders list`, `ls patches/`, or `grep`.
 
@@ -38,12 +38,12 @@ Returns `PropertyResult::{Pass, Fail(String), Discard}`. Deterministic, totally 
 
 ## Witness contract
 
-A witness is a concrete `#[test]` named `witness_<name>_case_<tag>` that calls `property_<name>` with frozen inputs. Passes on base HEAD, fails on `M_<variant>=active` or on the `etna/<variant>` branch. No RNG, no clock, no `proptest!` macros, no `#[quickcheck]`.
+A witness is a concrete `#[test]` named `witness_<name>_case_<tag>` that calls `property_<name>` with frozen inputs. Passes on base HEAD, fails when the mutation is active (marauders: `M_<variant>=active`; patch: `git apply patches/<variant>.patch`). No RNG, no clock, no `proptest!` macros, no `#[quickcheck]`.
 
 ## Injection: marauders vs patch
 
 - **Marauders** (preferred for localized changes): comment syntax in the source file, activated by `M_<variant>=active` for testing.
-- **Patch** (fallback): `patches/<variant>.patch` applied to a fresh worktree off the base commit. Used when the fix spans many files or is too intertwined for clean marauders extraction. The runner does not need to know about patches — the `etna/<variant>` branch has them already applied.
+- **Patch** (fallback): `patches/<variant>.patch` applied directly against the base working tree at validate time. Used when the fix spans many files or is too intertwined for clean marauders extraction. No per-variant git branch — `git apply patches/<variant>.patch` reproduces the buggy state on demand and `git apply -R` reverts.
 
 ## Frameworks and where they live
 
@@ -57,7 +57,7 @@ A witness is a concrete `#[test]` named `witness_<name>_case_<tag>` that calls `
 - `etna.toml` is the single source of truth; `BUGS.md` / `TASKS.md` are derived and never hand-edited.
 - Running `etna workload doc <dir>` produces zero diff against `BUGS.md` / `TASKS.md`.
 - `etna workload check <dir>` exits 0 — enforced as a pre-commit hook on every workload under `workloads/Rust/`.
-- One commit per variant. All variants share the same `base_commit`, and that SHA equals current master HEAD.
+- All variants share the same `base_commit`, and that SHA equals current master HEAD. The base tree is the only checked-out state.
 - `marauders list` and `patches/` are consistent with `etna.toml`.
 - PascalCase property names in the manifest map to `property_<snake>` in source via `pascal_to_snake` (`etna2/src/commands/workload/check.rs:307`).
 - No placeholder text in workload-critical files.
